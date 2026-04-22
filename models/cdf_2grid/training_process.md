@@ -39,8 +39,16 @@ Two separate normalizations are applied internally:
 The model accepts raw, unscaled data directly in the competition signature:
 
 ```python
+from models import CDFDoubleGridNet
+model = CDFDoubleGridNet() # Weights are downloaded automatically from a public HuggingFace repository — no HF token required.
+velocity_out = model(t, pos, idcs_airfoil, velocity_in)
+```
+
+or
+
+```python
 from models.cdf_2grid.model import Model
-model = Model()   # downloads weights from HF Hub if not present locally
+model = Model()   
 velocity_out = model(t, pos, idcs_airfoil, velocity_in)
 ```
 
