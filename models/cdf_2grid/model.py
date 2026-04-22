@@ -1,8 +1,7 @@
 """CDFDoubleGridModel — Multi-scale U-Net with temporal attention.
 
   - Multi-scale voxel pyramid: scatter into coarse AND fine grids dynamically.
-  - Density-Adaptive CDF Mapping: Grid lines dynamically warp to follow point density,
-    ensuring maximum resolution at the boundary layer and wake.
+  - Density-Adaptive CDF Mapping: Grid lines dynamically warp to follow point density.
   - Temporal cross-attention: 5 input frames → per-point temporal summary via
     a lightweight multi-head attention across the T dimension.
   - Fourier positional encoding.
@@ -20,18 +19,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Constants
-# ──────────────────────────────────────────────────────────────────────────────
+
 T_IN  = 5
 T_OUT = 5
 FOURIER_BANDS = 8   # number of frequency bands for positional encoding
 SDF_EMB_DIM   = 16
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Utility: SDF & CDF computations
-# ──────────────────────────────────────────────────────────────────────────────
 
 def compute_sdf_batch(
     pos: torch.Tensor,           # (B, N, 3)
@@ -119,9 +115,7 @@ def compute_regularized_amr_metrics(
     return pos_comp, widths_dict
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Feature Embeddings
-# ──────────────────────────────────────────────────────────────────────────────
 
 class FourierPosEnc(nn.Module):
     def __init__(self, n_bands: int = FOURIER_BANDS):
@@ -176,9 +170,7 @@ class TemporalAttn(nn.Module):
         return x_flat.reshape(B, N, T, D).permute(0, 2, 1, 3)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Spatial Blocks
-# ──────────────────────────────────────────────────────────────────────────────
 
 class ResBlock(nn.Module):
     def __init__(self, dim: int):
@@ -234,9 +226,7 @@ class UNet3D(nn.Module):
         return self.out(d1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Multi-scale CDF Voxel Spatial Mixing
-# ──────────────────────────────────────────────────────────────────────────────
 
 class VoxelLevel(nn.Module):
     """Scatter → Concat Dynamic Context → Fuse → UNet → Trilinear sample-back."""
@@ -262,16 +252,14 @@ class VoxelLevel(nn.Module):
         B, N, D = feats.shape
         R = self.res
         
-        # 1. Scatter into grid
         idx = (pos_comp * R).long().clamp(0, R - 1)
         flat = idx[..., 0] * R * R + idx[..., 1] * R + idx[..., 2]
         vox = self._scatter_mean(feats, flat, R).view(B, D, R, R, R)
         
-        # 2. Build Dynamic Grid Context from widths
-        # widths shape: (B, 3, R) -> View for 3D broadcasting
-        dx = widths[:, 0].view(B, 1, 1, 1, R) # X is last dim (W)
-        dy = widths[:, 1].view(B, 1, 1, R, 1) # Y is middle dim (H)
-        dz = widths[:, 2].view(B, 1, R, 1, 1) # Z is first dim (D)
+
+        dx = widths[:, 0].view(B, 1, 1, 1, R)
+        dy = widths[:, 1].view(B, 1, 1, R, 1)
+        dz = widths[:, 2].view(B, 1, R, 1, 1)
         
         dX = dx.expand(-1, 1, R, R, R)
         dY = dy.expand(-1, 1, R, R, R)
@@ -284,7 +272,6 @@ class VoxelLevel(nn.Module):
         dZ = torch.log(dZ.clamp(min=eps_log))
         vol = torch.log(vol.clamp(min=eps_log))
         
-        # Calculate cell centers in physical coordinates via cumsum
         x_bnd = torch.cat([torch.zeros(B, 1, device=widths.device), widths[:, 0].cumsum(dim=1)], dim=1)
         y_bnd = torch.cat([torch.zeros(B, 1, device=widths.device), widths[:, 1].cumsum(dim=1)], dim=1)
         z_bnd = torch.cat([torch.zeros(B, 1, device=widths.device), widths[:, 2].cumsum(dim=1)], dim=1)
@@ -293,7 +280,6 @@ class VoxelLevel(nn.Module):
         Y = ((y_bnd[:, :-1] + y_bnd[:, 1:]) / 2.0).view(B, 1, 1, R, 1).expand(-1, 1, R, R, R)
         Z = ((z_bnd[:, :-1] + z_bnd[:, 1:]) / 2.0).view(B, 1, R, 1, 1).expand(-1, 1, R, R, R)
         
-        # 3. Fuse context and pass through U-Net
         ctx = torch.cat([dX, dY, dZ, vol, X, Y, Z], dim=1)
         vox_with_ctx = torch.cat([vox, ctx], dim=1)
         vox = self.fuse_in(vox_with_ctx)
@@ -331,9 +317,7 @@ class MultiScaleVoxel(nn.Module):
         return self.fuse(torch.cat([c, f], dim=-1))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Core network
-# ──────────────────────────────────────────────────────────────────────────────
 
 class CDFDoubleGridNet(nn.Module):
     """Full forward pass (no competition wrapper)."""
@@ -445,9 +429,7 @@ class CDFDoubleGridNet(nn.Module):
         return pred * no_slip
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Competition-facing entry point
-# ──────────────────────────────────────────────────────────────────────────────
 
 class Model(nn.Module):
     """Wraps CDFDoubleGridNet with competition signature + inference-time y-flip TTA."""
@@ -541,10 +523,7 @@ class Model(nn.Module):
 
         pred = self._forward_single(pos, idcs_airfoil, velocity_in)
 
-        # Check if TTA is explicitly disabled via evaluate.py monkey-patch attribute
-        skip_tta = getattr(self, "_tta_disabled", False)
-
-        if not self.training and not skip_tta:
+        if not self.training:
             # y-flip TTA
             pos_flip    = pos.clone()
             pos_flip[..., 1] = -pos_flip[..., 1]
